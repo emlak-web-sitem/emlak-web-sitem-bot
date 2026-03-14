@@ -5368,9 +5368,14 @@
       "new": 0,
       "price_changes": 0,
       "deleted": 0
+    },
+    "2026-03-14": {
+      "new": 0,
+      "price_changes": 0,
+      "deleted": 0
     }
   },
-  "scan_sequence": 102,
-  "last_scan_timestamp": 1773417846.0852451,
+  "scan_sequence": 103,
+  "last_scan_timestamp": 1773471843.9511037,
   "auto_scan_enabled": true
 }
