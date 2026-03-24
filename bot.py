@@ -426,19 +426,21 @@ def fetch_via_flaresolverr(url, max_timeout=120000):
     return None
 
 def fetch_listings_hybrid_control():
-    """CRM API'yi öncelikli olarak kullanır, başarısız olursa diğer yöntemleri dener"""
-    # 1. CRM API (En hızlı ve güvenli yol)
-    results = fetch_listings_from_crm_api_complete()
-    if results and len(results) >= 400:
-        return results
+    """Playwright in-browser yöntemiyle tüm ilanları çeker"""
+    # CRM API ve FlareSolverr artık bot olarak algılanıyor (automated_browser_detected)
+    # Doğrudan Playwright in-browser yöntemine geç
+    print("[HYBRID] Playwright in-browser yöntemi kullanılıyor...", flush=True)
+    pw_result = fetch_listings_playwright()
     
-    # 2. FlareSolverr (Yedek yol)
-    print("[HYBRID] CRM API yetersiz kaldı veya başarısız. FlareSolverr deneniyor...", flush=True)
-    fs_results = fetch_listings_via_flaresolverr()
-    if fs_results:
-        return fs_results
-        
-    return results # Hiçbiri tam değilse en azından CRM'den geleni dön
+    if isinstance(pw_result, tuple):
+        listings, error = pw_result
+        if listings:
+            return listings
+        if error:
+            print(f"[HYBRID] Playwright hatası: {error}", flush=True)
+        return None
+    
+    return pw_result
 
 
 def fetch_listings_via_flaresolverr():
@@ -1111,6 +1113,8 @@ def get_next_scan_time():
 
 def should_scan_now():
     """Şu an tarama saati mi kontrol et (±5 dakika tolerans)"""
+    return False # OTOMATİK TARAMA TAMAMEN İPTAL EDİLMİŞTİR (Kullanıcı İsteği)
+    
     now = get_turkey_time()
     current_hour = now.hour
     current_minute = now.minute
@@ -1873,18 +1877,16 @@ def handle_command(chat_id, command, message_text):
     global AUTO_SCAN_ENABLED
     
     if command == "/aktif":
-        AUTO_SCAN_ENABLED = True
-        # State'e kaydet (kalıcı olsun)
-        state["auto_scan_enabled"] = True
-        save_state(state)
-        send_message("✅ <b>Otomatik Tarama AKTİF edildi.</b>\nBot belirtilen aralıklarla tarama yapmaya devam edecek.", chat_id)
+        # AUTO_SCAN_ENABLED = True
+        # state["auto_scan_enabled"] = True
+        # save_state(state)
+        send_message("ℹ️ <b>Otomatik Tarama Özelliği Kapatılmıştır.</b>\nBot artık arka planda otomatik tarama yapmaz. İlan eklemek için kod yazın veya /tara kullanın.", chat_id)
         
     elif command == "/pasif" or command == "/dur":
-        AUTO_SCAN_ENABLED = False
-        # State'e kaydet (kalıcı olsun)
-        state["auto_scan_enabled"] = False
-        save_state(state)
-        send_message("⛔ <b>Otomatik Tarama PASİF edildi.</b>\nSiz tekrar /aktif diyene kadar veya /tara ile manuel komut verene kadar tarama yapılmayacak.", chat_id)
+        # AUTO_SCAN_ENABLED = False
+        # state["auto_scan_enabled"] = False
+        # save_state(state)
+        send_message("✅ <b>Otomatik Tarama Zaten Pasif.</b>\nArka plan taramaları sistemden tamamen kaldırılmıştır.", chat_id)
 
     elif command == "/start":
         interval = get_scan_interval() // 60
@@ -1899,6 +1901,8 @@ def handle_command(chat_id, command, message_text):
         msg += "/hafta - Son 7 gun\n"
         msg += "/son [sayi] - Son ilanlar\n"
         msg += "/ara [kelime] - Ilan ara\n"
+        msg += "/ekle [kod] - Tekil ilan ekle\n"
+        msg += "/sil [kod] - Tekil ilan sil\n"
         msg += "/ucuz [sayi] - En ucuz ilanlar\n"
         msg += "/pahali [sayi] - En pahali ilanlar\n"
         msg += "/silinenler - Silinen ilanlar\n"
@@ -1917,8 +1921,11 @@ def handle_command(chat_id, command, message_text):
         msg += "/bellek - Bellekteki ilan sayisi\n"
         msg += "/bugun - Bugunku aktiviteler\n"
         msg += "/hafta - Son 7 gunluk ozet\n\n"
-        msg += "<b>Arama</b>\n"
+        msg += "<b>Arama, Ekleme ve Silme</b>\n"
         msg += "/ara [kelime] - Ilan ara\n"
+        msg += "/ekle [kod] - Tekil ilan kodunu siteye zorla ekle\n"
+        msg += "/sil [kod] - İlanı tamamen sistemden sil\n"
+        msg += "Ayrıca direkt olarak sadece ilan kodunu (örn: 3458-311) yazarak da hızlıca ekleyebilirsiniz.\n"
         msg += "/son [sayi] - Son eklenen ilanlar\n"
         msg += "/ucuz [sayi] - En ucuz ilanlar\n"
         msg += "/pahali [sayi] - En pahali ilanlar\n\n"
@@ -2146,6 +2153,59 @@ def handle_command(chat_id, command, message_text):
         for kod, item, _ in sorted_items:
             msg += "<b>" + kod + "</b>\n  " + item.get("title", "")[:35] + "\n  " + item.get("fiyat", "-") + "\n\n"
         send_message(msg, chat_id)
+        
+    elif command.startswith("/ekle"):
+        parts = message_text.split()
+        if len(parts) < 2:
+            send_message("❌ Eksik bilgi. Kullanım: /ekle [ilan_kodu]\nÖrnek: /ekle 3458-311", chat_id)
+            return None
+            
+        kod = parts[1].strip()
+        link = f"https://www.makrolife.com.tr/ilandetay?ilan_kodu={kod}"
+        
+        send_message(f"⏳ <b>{kod}</b> ilanını koparıp sitenize eklemek için istek başlatıldı. Bu işlem yaklaşık 5-15 saniye sürebilir, lütfen bekleyin...", chat_id)
+        
+        r = call_site_api("add", ilan_kodu=kod, url=link, kimden="Telegram Bot (Tekil Ekle)")
+        
+        if isinstance(r, dict):
+            if r.get("success"):
+                if r.get("already_exists"):
+                    send_message(f"⏭️ <b>Bu ilan zaten sisteminizde bulunuyor:</b>\n📋 {kod}", chat_id)
+                else:
+                    send_message(f"✅ <b>İlan siteden başarıyla çekildi ve eklendi!</b>\n📋 {kod}", chat_id)
+            else:
+                err_detail = r.get("error", "Bilinmeyen bir hata oluştu veya ilan Makrolife sitesinde artık yayında değil.")
+                send_message(f"❌ <b>İlan eklenemedi:</b>\n📋 {kod}\nSebep: {err_detail}", chat_id)
+        else:
+            send_message(f"❌ <b>İlan eklenirken sunucunuza ulaşılamadı.</b>", chat_id)
+
+    elif command.startswith("/sil"):
+        parts = message_text.split()
+        if len(parts) < 2:
+            send_message("❌ Eksik bilgi. Kullanım: /sil [ilan_kodu]\nÖrnek: /sil 3458-311", chat_id)
+            return None
+            
+        kod = parts[1].strip()
+        send_message(f"⏳ <b>{kod}</b> ilanını sistemden silmek için istek başlatıldı...", chat_id)
+        
+        # Siteden silme API çağrısı
+        r = call_site_api("delete", ilan_kodu=kod, reason="Telegram Bot (Manuel Silme)")
+        
+        # Eğer varsa botun lokal belleğinden (items) sil ve kaydet
+        if kod in state["items"]:
+            del state["items"][kod]
+            save_state(state)
+            
+        if isinstance(r, dict):
+            if r.get("success"):
+                send_message(f"✅ <b>İlan sitenizden başarıyla silindi!</b>\n📋 {kod}", chat_id)
+            else:
+                err_detail = r.get("error", "İlan sitede zaten yok veya bulunamadı.")
+                send_message(f"⚠️ <b>Uyarı:</b> İlan bot belleğinden silindi ancak siteden silinirken takıldı (belki de zaten sitede yok).\n📋 {kod}\nSebep: {err_detail}", chat_id)
+        else:
+            send_message(f"❌ <b>Sunucunuza ulaşılamadı.</b> İlan botun kendi takibinden çıkarıldı ancak sitenizden silindiğini manuel kontrol ediniz.", chat_id)
+
+
     
     elif command == "/tara":
         global MANUAL_SCAN_LIMIT, WAITING_PAGE_CHOICE
@@ -2250,6 +2310,14 @@ def check_telegram_commands():
             cmd_result = handle_command(chat_id, command, text)
             if cmd_result == "SCAN":
                 result = "SCAN"
+        else:
+            # Check if user typed anilan kodu directly (e.g. 3458-311 or ML-3458-311)
+            import re
+            cleaned_text = text.strip()
+            if re.match(r'^(?:[A-Za-z]+[-_])?\d+[-_]\d+$', cleaned_text) or re.match(r'^[A-Za-z0-9\-]{5,15}$', cleaned_text) and '-' in cleaned_text:
+                cmd_result = handle_command(chat_id, "/ekle", f"/ekle {cleaned_text}")
+                if cmd_result == "SCAN":
+                    result = "SCAN"
 
     return result
 
@@ -2261,25 +2329,8 @@ def fetch_listings_playwright():
 
     scan_start = time.time()
 
-    # === 1. FLARESOLVERR İLE DENEME (En güçlü yöntem) ===
-    if USE_FLARESOLVERR and FLARESOLVERR_URL:
-        print("[FLARESOLVERR] Öncelikli yöntem olarak deneniyor...", flush=True)
-        flare_result = fetch_listings_via_flaresolverr()
-        if flare_result is not None:
-            ACTIVE_SCAN = False
-            return flare_result
-        print("[FLARESOLVERR] Başarısız, Google Proxy deneniyor...", flush=True)
-
-    # === 2. GOOGLE PROXY İLE DENEME (Cloudflare Bypass) ===
-    if USE_GOOGLE_PROXY:
-        print("[GOOGLE_PROXY] Deneniyor...", flush=True)
-        google_result = fetch_listings_via_google_proxy()
-        if google_result is not None:
-            ACTIVE_SCAN = False
-            return google_result
-        print("[GOOGLE_PROXY] Başarısız, Playwright'a geçiliyor...", flush=True)
-
-    print("[PLAYWRIGHT] Başlatılıyor...", flush=True)
+    # CRM API/FlareSolverr artık bot olarak algılanıyor - doğrudan Playwright kullan
+    print("[PLAYWRIGHT] In-browser yöntem başlatılıyor...", flush=True)
 
     results = []
     seen_codes = set()
@@ -2334,186 +2385,130 @@ def fetch_listings_playwright():
         stealth_sync(page)  # Apply stealth mode to bypass detection
         print("[PLAYWRIGHT] Stealth mode uygulandı", flush=True)
 
-        while True:
-            if SCAN_STOP_REQUESTED:
-                print("[PLAYWRIGHT] Kullanıcı durdurdu", flush=True)
-                send_message("⛔ <b>Tarama kullanıcı tarafından durduruldu</b>")
-                break
-
-            if MANUAL_SCAN_LIMIT is not None and page_num >= MANUAL_SCAN_LIMIT:
-                print("[PLAYWRIGHT] Manuel sayfa limiti doldu", flush=True)
-                break
-
-            page_num += 1
-            if page_num == 1:
-                page_url = URL
-                print(f"[SAYFA {page_num}] Yükleniyor: {page_url}", flush=True)
-            else:
-                print(f"[SAYFA {page_num}] AJAX/Click geçişi yapılıyor...", flush=True)
-
-            success = False
-            
-            # Sayfa yükle - RETRY MANTİĞİ (3 deneme)
-            MAX_PAGE_RETRIES = 3
-            page_loaded = False
-            
-            for retry_attempt in range(MAX_PAGE_RETRIES):
-                try:
-                    if page_num == 1:
-                        # Timeout: 90 saniye
-                        page.goto(page_url, timeout=90000, wait_until="networkidle")
-                        
-                        # Cloudflare challenge kontrolü
-                        if not wait_for_cloudflare(page):
-                            print(f"[SAYFA {page_num}] Cloudflare geçilemedi", flush=True)
-                            last_error_screenshot = take_screenshot(page, f"cf_fail_p{page_num}")
-                            raise TimeoutError("Cloudflare challenge geçilemedi")
-                        
-                        # Kullanıcı talebi: İlk sayfa yüklendikten sonra 10 saniye bekle
-                        print(f"[SAYFA {page_num}] İlanların yüklenmesi için 10 saniye bekleniyor...", flush=True)
-                        page.wait_for_timeout(10000)
-                    else:
-                        # AJAX sayfalama
-                        # Önce mevcut içeriği alalım
-                        old_content_hash = page.evaluate("document.querySelector('body').innerText.substring(0, 500)")
-                        
-                        # Popup/Çerez engellerini AJAX öncesi temizle
-                        page.evaluate("let closeBtn = document.querySelector('.img-popup-close, .cookie-accept, button:has-text(\"Kabul\")'); if(closeBtn) closeBtn.click();")
-
-                        # İnsan benzeri rastgele kavisli hareketler
-                        bezier_mouse_move(page, random.randint(100, 300), random.randint(100, 300), random.randint(500, 900), random.randint(400, 700))
-                        time.sleep(random.uniform(0.5, 1.5))
-
-                        print(f"[SAYFA {page_num}] sayfaDegistir({page_num}) tetikleniyor...", flush=True)
-                        try:
-                            # AJAX yanıtını bekle
-                            with page.expect_response(lambda r: "ilan-sayfalama" in r.url, timeout=20000) as response_info:
-                                page.evaluate(f"if(typeof sayfaDegistir !== 'undefined') {{ sayfaDegistir({page_num}); }}")
-                            print(f"[SAYFA {page_num}] AJAX yanıtı: {response_info.value.status}", flush=True)
-                        except:
-                            print(f"[SAYFA {page_num}] AJAX yanıtı gecikti, manuel tıklama denenecek.", flush=True)
-                            page.evaluate(f"if(typeof sayfaDegistir !== 'undefined') {{ sayfaDegistir({page_num}); }}")
-                        
-                        # Kullanıcı talebi: Sayfa geçişinden sonra 10 saniye bekle
-                        print(f"[SAYFA {page_num}] İçeriğin yüklenmesi için 10 saniye bekleniyor...", flush=True)
-                        page.wait_for_timeout(10000)
-                        
-                        new_content_hash = page.evaluate("document.querySelector('body').innerText.substring(0, 500)")
-                        
-                        if old_content_hash == new_content_hash:
-                            print(f"[SAYFA {page_num}] İçerik değişmedi, Buton tıklaması deneniyor...", flush=True)
-                            try:
-                                # Popup'ları temizle
-                                page.evaluate("let closeBtn = document.querySelector('.img-popup-close, .modal-close, .close'); if(closeBtn) closeBtn.click();")
-                                
-                                js_click = f"""
-                                (function(num) {{
-                                    let btn = document.querySelector('a.page-link[data-sayfa="' + num + '"]');
-                                    if(!btn) {{
-                                        let links = Array.from(document.querySelectorAll('a.page-link, .pagination a, ul.pagination li a'));
-                                        btn = links.find(a => a.innerText.trim() === String(num));
-                                    }}
-                                    if(btn) {{
-                                        btn.scrollIntoView({{behavior: 'smooth', block: 'center'}});
-                                        setTimeout(() => btn.click(), 500);
-                                        return true;
-                                    }}
-                                    return false;
-                                }})({page_num})
-                                """
-                                clicked = page.evaluate(js_click)
-                                if clicked:
-                                    print(f"[SAYFA {page_num}] JS-tıklama yapıldı, 10 saniye bekleniyor...", flush=True)
-                                    page.wait_for_timeout(10000)
-                                else:
-                                    print(f"[SAYFA {page_num}] Sayfa butonu bulunamadı!", flush=True)
-                                    last_error_screenshot = take_screenshot(page, f"pagination_fail_p{page_num}")
-                            except Exception as e:
-                                print(f"[SAYFA {page_num}] Tıklama hatası: {str(e)[:100]}", flush=True)
-                        
-                    page_loaded = True
-                    break
-                except TimeoutError:
-                    if retry_attempt < MAX_PAGE_RETRIES - 1:
-                        print(f"[SAYFA {page_num}] Timeout! Yeniden deneniyor ({retry_attempt + 2}/{MAX_PAGE_RETRIES})...", flush=True)
-                        time.sleep(5)
-                        if page_num == 1:
-                            try:
-                                page.close()
-                                context.close()
-                                context = new_context()
-                                page = context.new_page()
-                                stealth_sync(page)
-                            except: pass
-                    else:
-                        print(f"[SAYFA {page_num}] Sayfa yüklenemedi (Tüm denemeler tükendi)", flush=True)
-                except Exception as e:
-                    print(f"[SAYFA {page_num}] Beklenmeyen hata: {e}", flush=True)
-                    if retry_attempt == MAX_PAGE_RETRIES - 1:
-                        last_error_screenshot = take_screenshot(page, f"error_p{page_num}")
-
-            if not page_loaded:
-                consecutive_failures += 1
-                if page_num <= 3:
-                    error_msg = f"Sayfa {page_num} yüklenemedi. Site erişilemez durumda olabilir."
-                    if last_error_screenshot:
-                        send_photo(last_error_screenshot, f"❌ HATA: Sayfa {page_num} yüklenemedi.")
-                    browser.close()
-                    ACTIVE_SCAN = False
-                    return (None, error_msg)
-                
-                if consecutive_failures >= MAX_FAILURES:
-                    error_msg = f"Art arda {MAX_FAILURES} sayfa hatası. Tarama durduruldu."
-                    browser.close()
-                    ACTIVE_SCAN = False
-                    return (None, error_msg)
-                continue
-            
-            consecutive_failures = 0
-
-            # İçerik kontrolü ve ilan çekme
+        # === SAYFA 1: YÜKLEME VE BOT TOKEN BEKLEME ===
+        page_url = URL
+        print(f"[SAYFA 1] Yükleniyor: {page_url}", flush=True)
+        
+        page1_loaded = False
+        for retry_attempt in range(3):
             try:
-                page.wait_for_selector('a[href*="/ilan/"]', timeout=15000)
-                success = True
-            except TimeoutError:
-                if page_num <= MIN_VALID_PAGES:
-                    error_msg = f"Kritik Hata: Sayfa {page_num} boş çıktı! (İlk {MIN_VALID_PAGES} sayfa boş olamaz)"
-                    print(f"[KRİTİK] {error_msg}", flush=True)
-                    scr = take_screenshot(page, f"empty_p{page_num}")
-                    if scr:
-                        send_photo(scr, f"⚠️ KRİTİK: Sayfa {page_num} boş geldi!")
-                    browser.close()
-                    ACTIVE_SCAN = False
-                    return (None, error_msg)
-                print(f"[SAYFA {page_num}] İlan bulunamadı, tarama bitiriliyor.", flush=True)
+                page.goto(page_url, timeout=90000, wait_until="networkidle")
+                
+                if not wait_for_cloudflare(page):
+                    print("[SAYFA 1] Cloudflare geçilemedi", flush=True)
+                    last_error_screenshot = take_screenshot(page, "cf_fail_p1")
+                    if retry_attempt < 2:
+                        try:
+                            page.close()
+                            context.close()
+                            context = new_context()
+                            page = context.new_page()
+                            stealth_sync(page)
+                        except: pass
+                        time.sleep(5)
+                        continue
+                    raise TimeoutError("Cloudflare challenge geçilemedi")
+                
+                print("[SAYFA 1] Bot token alındı, ilanlar yükleniyor...", flush=True)
+                page.wait_for_timeout(10000)
+                page1_loaded = True
                 break
-
-            # İlanları parse et
-            listings = page.evaluate(
-                """() => {
+            except TimeoutError:
+                if retry_attempt < 2:
+                    print(f"[SAYFA 1] Timeout! Yeniden deneniyor ({retry_attempt + 2}/3)...", flush=True)
+                    time.sleep(5)
+                    try:
+                        page.close()
+                        context.close()
+                        context = new_context()
+                        page = context.new_page()
+                        stealth_sync(page)
+                    except: pass
+                else:
+                    print("[SAYFA 1] Sayfa yüklenemedi (Tüm denemeler tükendi)", flush=True)
+            except Exception as e:
+                print(f"[SAYFA 1] Beklenmeyen hata: {e}", flush=True)
+                if retry_attempt == 2:
+                    last_error_screenshot = take_screenshot(page, "error_p1")
+        
+        if not page1_loaded:
+            browser.close()
+            ACTIVE_SCAN = False
+            return (None, "Sayfa 1 yüklenemedi. Site erişilemez durumda olabilir.")
+        
+        # === SAYFA 1: IN-BROWSER API İLE İLAN VERİLERİNİ ÇEK ===
+        page1_listings = page.evaluate("""async () => {
+            try {
+                const bt = window.__botToken || '';
+                if (!bt) return null;
+                
+                const tokenEls = document.querySelectorAll('[data-token]');
+                const tokens = [];
+                tokenEls.forEach(el => {
+                    const t = el.getAttribute('data-token');
+                    if (t && !el.closest('[aria-hidden="true"]') && !tokens.includes(t)) {
+                        tokens.push(t);
+                    }
+                });
+                
+                if (tokens.length === 0) return null;
+                
+                const resp = await fetch('/api/ilan-verileri.php', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                        'X-Requested-With': 'XMLHttpRequest'
+                    },
+                    body: JSON.stringify({tokens, bt, recaptcha: ''})
+                });
+                
+                if (!resp.ok) return null;
+                const data = await resp.json();
+                if (!data.success || !data.data) return null;
+                
+                const listings = [];
+                for (let i = 0; i < tokens.length; i++) {
+                    const d = data.data[String(i)];
+                    if (d && d.ilan_kodu) {
+                        listings.push({
+                            kod: d.ilan_kodu,
+                            fiyat: d.fiyat || 'Fiyat yok',
+                            link: d.seo_url ? 'https://www.makrolife.com.tr' + d.seo_url : '',
+                            title: d.baslik || d.ilan_kodu
+                        });
+                    }
+                }
+                return listings;
+            } catch(e) {
+                return null;
+            }
+        }""")
+        
+        # Fallback: DOM'dan oku
+        if not page1_listings:
+            print("[SAYFA 1] API ile veri alınamadı, DOM'dan okunuyor...", flush=True)
+            page1_listings = page.evaluate("""() => {
                 const out = [];
                 const seen = new Set();
                 document.querySelectorAll('[data-token]').forEach(el => {
-                    const token = el.getAttribute("data-token");
-                    if (!token) return;
                     const text = el.innerText || "";
-                    const m = text.match(/(ML-[A-Z0-9-]{3,})/i) || document.body.innerHTML.match(new RegExp('ML-[A-Z0-9-]{3,}', 'i'));
+                    const m = text.match(/(ML-[A-Z0-9-]{3,})/i);
                     let kod = m ? m[0].toUpperCase() : "";
                     if (!kod) {
                         const a = el.querySelector('a[href*="ML-"]');
                         if (a) {
-                           const m2 = a.getAttribute("href").match(/(ML-[A-Z0-9-]{3,})/i);
-                           if (m2) kod = m2[1].toUpperCase();
+                            const m2 = a.getAttribute("href").match(/(ML-[A-Z0-9-]{3,})/i);
+                            if (m2) kod = m2[1].toUpperCase();
                         }
                     }
                     if (!kod || seen.has(kod)) return;
                     seen.add(kod);
                     let fiyat = "Fiyat yok";
                     let title = kod;
-                    const h2 = el.querySelector("h2, h3, h4, h5, h6");
-                    if (h2) title = h2.innerText.trim().replace(/\s*-\s*ML-\d+-\d+\s*$/i, '');
+                    const h = el.querySelector("h2, h3, h4, h5, h6");
+                    if (h) title = h.innerText.trim();
                     for (const line of text.split("\\n")) {
-                        if (/^[\d., ]+\s*(₺|TL)$/i.test(line.trim())) {
+                        if (/^[\\d., ]+\\s*(₺|TL)$/i.test(line.trim())) {
                             fiyat = line.trim();
                             break;
                         }
@@ -2523,50 +2518,136 @@ def fetch_listings_playwright():
                     if (fullHref && !fullHref.startsWith('http')) {
                         fullHref = 'https://www.makrolife.com.tr' + (fullHref.startsWith('/') ? '' : '/') + fullHref;
                     }
-                    out.push({kod, fiyat, title, link: fullHref || `https://www.makrolife.com.tr/ilandetay?ilan_kodu=${kod}`});
+                    out.push({kod, fiyat, title, link: fullHref});
                 });
                 return out;
-            }"""
-            )
-
-            if not listings:
-                print(f"[SAYFA {page_num}] Liste boş, tarama bitti.", flush=True)
+            }""")
+        
+        if not page1_listings:
+            take_screenshot(page, "no_listings_p1")
+            browser.close()
+            ACTIVE_SCAN = False
+            return (None, "Sayfa 1'de ilan bulunamadı")
+        
+        page_num = 1
+        for item in page1_listings:
+            if item["kod"] not in seen_codes:
+                seen_codes.add(item["kod"])
+                results.append((item["kod"], item["fiyat"], item["link"], item["title"], 1))
+        
+        print(f"[SAYFA 1] {len(page1_listings)} ilan bulundu (Toplam: {len(results)})", flush=True)
+        
+        # === SAYFA 2+: IN-BROWSER API İLE AJAX SAYFALAMA ===
+        MAX_PAGES = 100
+        consecutive_empty = 0
+        
+        while page_num < MAX_PAGES:
+            if SCAN_STOP_REQUESTED:
+                print("[PLAYWRIGHT] Kullanıcı durdurdu", flush=True)
+                send_message("⛔ <b>Tarama kullanıcı tarafından durduruldu</b>")
                 break
-
+            
+            if MANUAL_SCAN_LIMIT is not None and page_num >= MANUAL_SCAN_LIMIT:
+                print("[PLAYWRIGHT] Manuel sayfa limiti doldu", flush=True)
+                break
+            
+            page_num += 1
+            print(f"[SAYFA {page_num}] In-browser API ile sayfalama...", flush=True)
+            
+            pageN_listings = page.evaluate(f"""async () => {{
+                try {{
+                    const bt = window.__botToken || '';
+                    if (!bt) return null;
+                    
+                    // Adım 1: Sayfa iskeletlerini al
+                    const sayfaResp = await fetch('/api/ilan-sayfalama.php', {{
+                        method: 'POST',
+                        headers: {{
+                            'Content-Type': 'application/json',
+                            'X-Requested-With': 'XMLHttpRequest'
+                        }},
+                        body: JSON.stringify({{sayfa: {page_num}, filtreler: {{}}, bt, recaptcha: ''}})
+                    }});
+                    
+                    if (!sayfaResp.ok) return null;
+                    const sayfaData = await sayfaResp.json();
+                    if (!sayfaData.success || !sayfaData.html) return null;
+                    
+                    // Adım 2: Token'ları çıkar
+                    const tokens = [];
+                    const re = /data-token="([^"]+)"/g;
+                    let m;
+                    while ((m = re.exec(sayfaData.html)) !== null) {{
+                        if (!tokens.includes(m[1])) tokens.push(m[1]);
+                    }}
+                    if (tokens.length === 0) return null;
+                    
+                    // Adım 3: İlan verilerini çek
+                    const veriResp = await fetch('/api/ilan-verileri.php', {{
+                        method: 'POST',
+                        headers: {{
+                            'Content-Type': 'application/json',
+                            'X-Requested-With': 'XMLHttpRequest'
+                        }},
+                        body: JSON.stringify({{tokens, bt, recaptcha: ''}})
+                    }});
+                    
+                    if (!veriResp.ok) return null;
+                    const veriData = await veriResp.json();
+                    if (!veriData.success || !veriData.data) return null;
+                    
+                    const listings = [];
+                    for (let i = 0; i < tokens.length; i++) {{
+                        const d = veriData.data[String(i)];
+                        if (d && d.ilan_kodu) {{
+                            listings.push({{
+                                kod: d.ilan_kodu,
+                                fiyat: d.fiyat || 'Fiyat yok',
+                                link: d.seo_url ? 'https://www.makrolife.com.tr' + d.seo_url : '',
+                                title: d.baslik || d.ilan_kodu
+                            }});
+                        }}
+                    }}
+                    return listings;
+                }} catch(e) {{
+                    return null;
+                }}
+            }}""")
+            
+            if not pageN_listings:
+                consecutive_empty += 1
+                print(f"[SAYFA {page_num}] API yanıtı boş (art arda: {consecutive_empty})", flush=True)
+                if consecutive_empty >= 3:
+                    print("[SAYFA] Art arda 3 boş sayfa, tarama bitiriliyor.", flush=True)
+                    break
+                continue
+            
+            consecutive_empty = 0
             new_on_page = 0
-            for item in listings:
+            for item in pageN_listings:
                 if item["kod"] not in seen_codes:
                     seen_codes.add(item["kod"])
                     new_on_page += 1
                     results.append((item["kod"], item["fiyat"], item["link"], item["title"], page_num))
             
-            print(f"[SAYFA {page_num}] {len(listings)} ilan bulundu. (Yeni: {new_on_page}, Toplam: {len(results)})", flush=True)
+            print(f"[SAYFA {page_num}] {len(pageN_listings)} ilan, {new_on_page} yeni (Toplam: {len(results)})", flush=True)
             
             if new_on_page == 0 and page_num > 1:
-                print("[SAYFA] Yeni ilan yok, son sayfaya gelinmiş olabilir.", flush=True)
-                # break # Bazı sitelerde mükerrer ilanlar olabilir, hemen kırmayalım
-
+                print("[SAYFA] Yeni ilan yok, son sayfaya ulaşıldı.", flush=True)
+                break
+            
             if page_num % 25 == 0:
                 send_message(f"🔄 <b>TARAMA DEVAM EDİYOR</b>\n📄 Sayfa: {page_num}\n📊 İlan: {len(results)}")
-
-            if page_num % 100 == 0:
-                try:
-                    page.close()
-                    context.close()
-                    context = new_context()
-                    page = context.new_page()
-                    stealth_sync(page)
-                    page.goto(URL, timeout=90000, wait_until="networkidle")
-                    wait_for_cloudflare(page)
-                except: pass
-
-            page.wait_for_timeout(random.randint(2000, 4000))
-
+            
+            time.sleep(random.uniform(1.0, 2.0))
+        
         browser.close()
 
     bot_stats["last_scan_pages"] = page_num
     print(f"[PLAYWRIGHT] Tamamlandı: {len(results)} ilan, {page_num} sayfa", flush=True)
     return (results, None)
+
+
 
 
 def run_scan_with_timeout():
@@ -2909,8 +2990,9 @@ def main():
     item_count = len(state.get("items", {}))
     
     # AUTO_SCAN_ENABLED durumunu state'ten yükle (container restart koruması)
-    AUTO_SCAN_ENABLED = state.get("auto_scan_enabled", True)  # Varsayılan: True
-    auto_scan_status = "AKTİF" if AUTO_SCAN_ENABLED else "PASİF"
+    AUTO_SCAN_ENABLED = False # Varsayılan: False (Kullanıcı isteği üzerine otomatik tarama kapatıldı)
+    
+    auto_scan_status = "KALICI PASİF"
     print(f"[BASLANGIC] Otomatik tarama: {auto_scan_status}", flush=True)
     
     # Son tarama zamanini yukle
